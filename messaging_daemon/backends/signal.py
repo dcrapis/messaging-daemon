@@ -146,6 +146,78 @@ class SignalBackend(Backend):
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip())
 
+    # ── Expiry helpers ────────────────────────────────────────────────────────
+
+    def _expiry_map(self, account: str) -> dict[str, int]:
+        """
+        Return a dict mapping thread identifier -> expiration window in ms.
+        Keys are group IDs (for group chats) or sender UUIDs/numbers (for DMs).
+        Only includes entries where messageExpirationTime > 0.
+        """
+        expiry: dict[str, int] = {}
+        try:
+            r = subprocess.run(
+                [SIGNAL_CLI, "-a", account, "--output=json", "listContacts"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                for c in json.loads(r.stdout):
+                    secs = c.get("messageExpirationTime") or 0
+                    if secs > 0:
+                        # Index by UUID and number so we match either
+                        if c.get("uuid"):
+                            expiry[c["uuid"]] = secs * 1000
+                        if c.get("number"):
+                            expiry[c["number"]] = secs * 1000
+        except Exception as exc:
+            print(f"  [signal] Failed to fetch contact expiry: {exc}")
+
+        try:
+            r = subprocess.run(
+                [SIGNAL_CLI, "-a", account, "--output=json", "listGroups"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                for g in json.loads(r.stdout):
+                    secs = g.get("messageExpirationTime") or 0
+                    if secs > 0 and g.get("id"):
+                        expiry[g["id"]] = secs * 1000
+        except Exception as exc:
+            print(f"  [signal] Failed to fetch group expiry: {exc}")
+
+        return expiry
+
+    def _expire_messages(self, db: sqlite3.Connection, account: str) -> int:
+        """
+        Delete messages from the DB that have passed their chat's expiry window.
+        Returns the number of rows deleted.
+        """
+        expiry_map = self._expiry_map(account)
+        if not expiry_map:
+            return 0
+
+        cutoff_ms = now_ms()
+        total_deleted = 0
+
+        for thread_key, window_ms in expiry_map.items():
+            threshold = cutoff_ms - window_ms
+            # thread_key may match either sender or thread_id
+            cursor = db.execute(
+                """DELETE FROM messages
+                   WHERE backend = ?
+                     AND account = ?
+                     AND timestamp_ms < ?
+                     AND (sender = ? OR thread_id = ?)""",
+                (self.name, account, threshold, thread_key, thread_key),
+            )
+            total_deleted += cursor.rowcount
+
+        if total_deleted:
+            db.commit()
+            print(f"  [signal] Expired {total_deleted} message(s) from DB.")
+
+        return total_deleted
+
     # ── Polling ───────────────────────────────────────────────────────────────
 
     def poll(self, db: sqlite3.Connection) -> int:
@@ -196,6 +268,10 @@ class SignalBackend(Backend):
             if store_message(db, msg):
                 count += 1
 
+        # Only run expiry once per hour — acceptable to keep messages up to
+        # 59 extra minutes rather than pay the O(N) cost every poll cycle.
+        if now_ms() % (3600 * 1000) < 60 * 1000:
+            self._expire_messages(db, account)
         return count
 
     # ── Confirmation page fields ──────────────────────────────────────────────
