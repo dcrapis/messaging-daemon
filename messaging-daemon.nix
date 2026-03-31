@@ -10,7 +10,7 @@ let
       owner = "vbuterin";
       repo = "messaging-daemon";
       rev = "main";
-      sha256 = "0c5wa5l2khirbxxg66rjy6mglwybr2mm1wq8q5cayjf95651zljv"; # replace: nix-prefetch-url --unpack https://github.com/vbuterin/messaging-daemon/archive/refs/heads/main.tar.gz
+      sha256 = "0qxgw6cddnpjzdx5wgfvk1irl1clj8i190jj3w36fnv15ry20hzh"; # replace: nix-prefetch-url --unpack https://github.com/vbuterin/messaging-daemon/archive/refs/heads/main.tar.gz
     };
 
     build-system = [ pkgs.python3.pkgs.setuptools ];
