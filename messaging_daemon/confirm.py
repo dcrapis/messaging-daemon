@@ -42,10 +42,15 @@ def enqueue(
     recipient: str,
     body: str,
     subject: str | None = None,
+    open_browser: bool = True,
 ) -> str:
     """
     Store a pending send and return the confirmation URL.
     The caller should return this URL to whoever made the /send request.
+
+    When open_browser=True (default) the URL auto-opens in Safari — suitable
+    for laptop-triggered sends. Agent-driven callers (e.g. nanobot) should
+    pass open_browser=False and drive /approve or /deny programmatically.
     """
     token = secrets.token_urlsafe(32)
     with _pending_lock:
@@ -58,13 +63,73 @@ def enqueue(
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
     url = f"http://127.0.0.1:{CONFIRM_PORT}/confirm?token={token}"
-    subprocess.Popen(["open", "-a", "Safari", url], close_fds=True)
+    if open_browser:
+        subprocess.Popen(["open", "-a", "Safari", url], close_fds=True)
     return url
 
 
 def pending_count() -> int:
     with _pending_lock:
         return len(_pending)
+
+
+# ── Programmatic access (used by /pending, /approve, /deny on API server) ─────
+
+def list_pending() -> list[dict]:
+    """Return pending confirmations as JSON-safe dicts (no backend instances)."""
+    with _pending_lock:
+        out = []
+        for token, p in _pending.items():
+            backend = p["backend"]
+            try:
+                display = backend.resolve_display_name(p["account"], p["recipient"])
+            except Exception:
+                display = p["recipient"]
+            out.append({
+                "token": token,
+                "backend": getattr(backend, "name", backend.__class__.__name__.replace("Backend", "").lower()),
+                "from": p["account"],
+                "to": p["recipient"],
+                "display_name": display,
+                "body": p["body"],
+                "subject": p["subject"],
+                "created_at": p["created_at"],
+                "confirm_url": f"http://127.0.0.1:{CONFIRM_PORT}/confirm?token={token}",
+            })
+        return out
+
+
+def approve(token: str) -> dict:
+    """Approve a pending send. Returns status dict."""
+    with _pending_lock:
+        pending = _pending.pop(token, None)
+    if not pending:
+        return {"ok": False, "error": "token not found or already handled"}
+    try:
+        pending["backend"].send(
+            pending["account"], pending["recipient"],
+            pending["body"], pending["subject"],
+        )
+        display = pending["backend"].resolve_display_name(
+            pending["account"], pending["recipient"]
+        )
+        print(f"[{datetime.now().isoformat()}] Confirmed send to {pending['recipient']} (via API)")
+        return {"ok": True, "to": pending["recipient"], "display_name": display}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
+
+def deny(token: str) -> dict:
+    """Deny a pending send. Returns status dict."""
+    with _pending_lock:
+        pending = _pending.pop(token, None)
+    if not pending:
+        return {"ok": False, "error": "token not found or already handled"}
+    display = pending["backend"].resolve_display_name(
+        pending["account"], pending["recipient"]
+    )
+    print(f"[{datetime.now().isoformat()}] Denied send to {pending['recipient']} (via API)")
+    return {"ok": True, "cancelled": True, "to": pending["recipient"], "display_name": display}
 
 
 # ── HTML helpers ──────────────────────────────────────────────────────────────

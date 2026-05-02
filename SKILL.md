@@ -5,13 +5,51 @@ description: "Use this skill whenever you need to read or send messages via Sign
 
 # Messaging Daemon HTTP API
 
+## Confirmation Flow (nanobot-driven)
+
+Non-self sends return `{pending: true, confirm_url, ...}`. Do NOT ask the user to open the URL — drive confirmation programmatically via the **trusted API on port 6666**:
+
+- `GET http://127.0.0.1:6666/pending` → list all pending tokens with `{token, backend, from, to, display_name, body, subject, created_at}`.
+- `GET http://127.0.0.1:6666/approve?token=<t>` → actually sends the message. Returns `{ok, to, display_name}`.
+- `GET http://127.0.0.1:6666/deny?token=<t>` → cancels it. Returns `{ok, cancelled}`.
+
+Recommended flow when the user asks to send:
+1. Call `http://127.0.0.1:6000/send?...&no_browser=1` to get `{pending: true, token, ...}`.
+2. Show the user a preview in chat (from/to/display_name/body) and ask for a y/n reply.
+3. On `y` / yes / ✅, call `http://127.0.0.1:6666/approve?token=<t>`. On `n` / no / ❌, call `http://127.0.0.1:6666/deny?token=<t>`. Confirm the outcome in chat.
+
+Agents should pass `&no_browser=1` on `/send` to suppress the Safari pop-up. `/send` returns a `token` field directly so callers can drive approve/deny without re-reading `/pending`. The browser confirmation page at `http://127.0.0.1:7000/confirm?token=...` remains available as a fallback.
+
+## Shortcut Commands (user preference)
+
+The user uses short aliases — interpret them as follows and act immediately without asking:
+
+- `messages <N><unit>` → summarize all messages from the last N units across every backend (Signal, Telegram, Email, WhatsApp). Units: `m` = minutes, `h` = hours, `d` = days. Examples: `messages 1h`, `messages 30m`, `messages 2d`.
+- `messages <N><unit> <backend>` → same but filtered to one backend (e.g. `messages 1h signal`, `messages 2h telegram`).
+- `messages <N><unit> from <name>` → filter by sender name/username substring.
+- Implementation: query `/messages?since_ms=<now_ms - N*unit_ms>&limit=500` on `http://127.0.0.1:6000`, then group by thread/chat and render a concise summary using display names (see Display Preferences below). Always prefer `sender_name` over raw IDs.
+- Default when units omitted: treat bare `messages N` as hours.
+
+## Display Preferences (user preference)
+
+When presenting messages to the user, **always prefer human-readable names over raw IDs**:
+
+- Use `sender_name` instead of `sender` whenever `sender_name` is non-null.
+- Use `recipient_name` / thread display name instead of raw `recipient` or `thread_id` when available.
+- For Telegram: `sender_name` is the `@username` (e.g. `@davidecrapis`). Fall back to `sender` only if missing.
+- For Signal: `sender_name` is the display name. Fall back to phone number only if missing.
+- For Email: use the name portion of `"Name <addr@host>"` if present, else the address.
+- If no name is available for a given ID, keep the ID but optionally suffix it as `(unknown)`.
+- When showing threads/chats, resolve participants to names the same way.
+
 ## Overview
 
 A unified local daemon runs on `http://localhost:6000` and handles both Signal and email. All messages — regardless of backend — are stored in a single SQLite database and queryable through the same endpoints.
 
-Two HTTP servers run:
-- **Port 6000** — main API (safe to expose to untrusted software)
-- **Port 7000** — confirmation UI (human-facing only; keep away from untrusted software)
+Three HTTP servers run:
+- **Port 6000** — public API (safe for untrusted callers: read-only queries + `/send` which only queues, never sends immediately)
+- **Port 6666** — trusted API (approve/deny pending sends — trusted callers only)
+- **Port 7000** — confirmation UI (human-facing browser only)
 
 **Important:** Sending to self completes immediately on both backends. Sending to anyone else returns a `confirm_url` that **must be shown to the user** — the message is not sent until the user opens that URL in their browser and clicks "Send".
 

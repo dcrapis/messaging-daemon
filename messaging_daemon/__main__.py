@@ -33,6 +33,7 @@ BACKENDS: dict = {
 # ── Shared imports ────────────────────────────────────────────────────────────
 
 from .http_api import run_api_server, set_backends
+from .trusted_api import run_trusted_server
 from .confirm import run_confirm_server
 from .poll import poll_loop, POLL_INTERVAL
 
@@ -46,14 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = p.add_subparsers(dest="command")
 
-    # Generic run command
     run_p = sub.add_parser("run", help="Start the daemon (default)")
     run_p.add_argument(
         "--interval", type=int, default=POLL_INTERVAL,
         help=f"Poll interval in seconds (default: {POLL_INTERVAL})",
     )
 
-    # Each backend registers its own subcommands
     for backend in BACKENDS.values():
         backend.register_commands(sub)
 
@@ -64,7 +63,6 @@ def main() -> None:
     init_db()
     args = build_parser().parse_args()
 
-    # Let each backend try to handle the command; stop at the first match
     for backend in BACKENDS.values():
         if backend.handle_command(args):
             return
@@ -73,6 +71,7 @@ def main() -> None:
     interval = getattr(args, "interval", POLL_INTERVAL)
     set_backends(BACKENDS)
     threading.Thread(target=run_api_server, daemon=True).start()
+    threading.Thread(target=run_trusted_server, daemon=True).start()
     threading.Thread(target=run_confirm_server, daemon=True).start()
     asyncio.run(poll_loop(BACKENDS, interval=interval))
 
