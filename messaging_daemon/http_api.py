@@ -1,5 +1,5 @@
 """
-http_api.py — main HTTP API server (port 6000).
+http_api.py — public API server (port 6000).
 
 Endpoints:
   GET /messages   — query messages across all backends
@@ -8,6 +8,10 @@ Endpoints:
   GET /status     — daemon health and stats
 
 All endpoints accept ?backend= to filter/select a specific backend.
+
+This server is safe to expose to untrusted software: /send queues outbound
+messages for human approval but never sends immediately (except self-sends).
+Approval/denial of pending sends lives on the trusted API (port 6666).
 """
 
 import json
@@ -126,18 +130,30 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(exc)}, 500)
                 return
 
-            # Non-self: queue for confirmation
-            confirm_url = enqueue(backend, account, recipient, body, subject)
+            # Non-self: queue for confirmation.
+            # Callers can opt out of the Safari pop-up by passing no_browser=1
+            # (or agent=1) — typically used by agents that drive /approve or
+            # /deny programmatically via the API.
+            no_browser_flag = (first("no_browser") or first("agent") or "").lower()
+            open_browser = no_browser_flag not in ("1", "true", "yes", "on")
+            confirm_url = enqueue(backend, account, recipient, body, subject,
+                                  open_browser=open_browser)
             display = backend.resolve_display_name(account, recipient)
+            token = confirm_url.rsplit("token=", 1)[-1]
             print(f"[{datetime.now().isoformat()}] Confirmation required: {confirm_url}")
             self.send_json({
                 "pending": True,
                 "confirm_url": confirm_url,
+                "token": token,
                 "backend": backend_name,
                 "from": account,
                 "to": recipient,
                 "display_name": display,
-                "message": "Open confirm_url in your browser to approve or deny.",
+                "message": (
+                    "Open confirm_url in your browser to approve or deny, "
+                    "or call /approve?token= / /deny?token= on the trusted API (port 6666). "
+                    "Pass &no_browser=1 to suppress the Safari pop-up."
+                ),
             })
 
         elif parsed.path == "/accounts":
