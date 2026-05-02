@@ -21,11 +21,13 @@ from .db import init_db
 from .backends.signal import SignalBackend
 from .backends.email import EmailBackend
 from .backends.telegram import TelegramBackend
+from .backends.whatsapp import WhatsAppBackend
 
 BACKENDS: dict = {
     "signal":   SignalBackend(),
     "email":    EmailBackend(),
     "telegram": TelegramBackend(),
+    "whatsapp": WhatsAppBackend(),
 }
 
 # ── Shared imports ────────────────────────────────────────────────────────────
